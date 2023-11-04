@@ -1,21 +1,11 @@
 FROM debian:buster-slim
 
 # Install necessary tools
-RUN apt-get update && \
-    apt-get install -y \
-    curl \
-    gnupg2 \
-    wget \
-    libgtk-3-0 \
-    libx11-xcb1 \
-    libxss1 \
-    libasound2 \
-    libgbm1 \
-    git
+RUN apt-get update && apt-get install -y curl gnupg2 wget libgtk-3-0 libx11-xcb1 libxss1 libasound2 libgbm1
 
-# Download and install VS Code
-RUN wget -qO- "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64" -O /tmp/code.deb && \
-    dpkg -i /tmp/code.deb && \
+# Download and install VS Code with dependencies
+RUN wget -qO /tmp/code.deb "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64" && \
+    apt-get install -y /tmp/code.deb && \
     rm /tmp/code.deb
 
 # Cleanup
