@@ -1,55 +1,49 @@
-FROM debian:buster-slim
+FROM debian:bullseye-slim
 
-# Install necessary packages
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    curl \
-    gnupg2 \
-    wget \
-    libgtk-3-0 \
-    libx11-xcb1 \
-    libxss1 \
-    libasound2 \
-    libgbm1 \
-    git \
-    libnspr4 \
-    libnss3 \
-    libxkbfile1 \
-    xdg-utils && \
-    rm -rf /var/lib/apt/lists/*
+    wget git build-essential llvm clang libssl-dev pkg-config cmake python3 curl \
+    gnupg2 libgtk-3-0 libx11-xcb1 libxss1 libasound2 libgbm1 libnspr4 libnss3 \
+    libxkbfile1 xdg-utils ca-certificates locales sudo net-tools \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Download and install VS Code
-RUN wget -qO- "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64" -O /tmp/code.deb && \
-    dpkg -i /tmp/code.deb || apt-get -f install -y && \
-    rm /tmp/code.deb
+WORKDIR /home/app
 
-# Install Rust and Cargo
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+RUN useradd -m app && echo "app ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && chown -R app:app /home/app
 
-# Create a non-root user and give them passwordless sudo privileges
-RUN useradd -m coder && \
-    echo "coder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+USER app
 
-# Change the owner of the home directory to the 'coder' user
-RUN chown -R coder:coder /home/coder
+# Set environment variables for Rust
+ENV RUSTUP_HOME=/home/app/.rustup \
+    CARGO_HOME=/home/app/.cargo \
+    PATH=/home/app/.cargo/bin:$PATH
 
-# Switch to 'coder' user from here on
-USER coder
-WORKDIR /home/coder
+# Install Rust for the 'app' user
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable; \
+    rustup --version; \
+    cargo --version; \
+    rustc --version; \
+    rustup target add wasm32-unknown-unknown
 
-# Add the start-up script
-COPY --chown=coder:coder start.sh /home/coder/start.sh
+#https://github.com/coder/code-server/releases
+RUN curl -fsSL -o install-code-server.sh https://code-server.dev/install.sh && \
+    sh install-code-server.sh && rm install-code-server.sh
 
-# Give execution permissions to the start-up script
-RUN chmod +x /home/coder/start.sh
+RUN wget https://open-vsx.org/api/rust-lang/rust/0.7.8/file/rust-lang.rust-0.7.8.vsix
 
-# Download and install the rust-analyzer VS Code extension
-RUN wget https://github.com/rust-lang/rust-analyzer/releases/download/2023-10-30/rust-analyzer-linux-x64.vsix && \
-    code --install-extension rust-analyzer-linux-x64.vsix && \
-    rm rust-analyzer-linux-x64.vsix
+#https://github.com/rust-lang/rust-analyzer/releases/tag/2023-10-30
+RUN wget https://github.com/rust-lang/rust-analyzer/releases/download/2023-10-30/rust-analyzer-linux-x64$
 
-# Expose the port for code-server
+RUN touch /home/app/.bash_profile && \
+    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> /home/app/.bash_profile
+
 EXPOSE 8080
 
-# Use the start-up script to initiate the code-server
-CMD ["/home/coder/start.sh"]
+COPY start.sh /home/app/start.sh
+USER root
+RUN chmod +x /home/app/start.sh
+USER app
+
+CMD ["/home/app/start.sh"]
