@@ -34,7 +34,7 @@ RUN curl -fsSL -o install-code-server.sh https://code-server.dev/install.sh && \
 RUN wget https://open-vsx.org/api/rust-lang/rust/0.7.8/file/rust-lang.rust-0.7.8.vsix
 
 #https://github.com/rust-lang/rust-analyzer/releases/tag/2023-10-30
-RUN wget https://github.com/rust-lang/rust-analyzer/releases/download/2023-10-30/rust-analyzer-linux-x64$
+RUN wget https://github.com/rust-lang/rust-analyzer/releases/download/2023-10-30/rust-analyzer-linux-x64.vsix
 
 RUN touch /home/app/.bash_profile && \
     echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> /home/app/.bash_profile
