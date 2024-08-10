@@ -68,7 +68,7 @@ services:
       - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
       - "traefik.http.services.dashboard.loadbalancer.passhostheader=true"
 
-      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_HOSTNAME}`)"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.tls=true"
