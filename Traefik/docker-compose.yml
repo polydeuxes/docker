@@ -1,0 +1,221 @@
+networks:
+  keycloak:
+    external: true
+  traefik:
+    external: true
+
+services:
+  traefik:
+    image: ${TRAEFIK_IMAGE_TAG}
+    container_name: traefik
+    command:
+      - "--log.level=${TRAEFIK_LOG_LEVEL}"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--ping=true"
+      - "--ping.entrypoint=ping"
+      - "--entryPoints.ping.address=:8082"
+      - "--entryPoints.web.address=:80"
+      - "--entryPoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.tls.certresolver=duckdns"
+      - "--entrypoints.websecure.http.tls.domains[0].main=${DOMAIN}"
+      - "--entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN}"
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.exposedByDefault=false"
+      - "--certificatesresolvers.duckdns.acme.dnschallenge=true"
+      - "--certificatesresolvers.duckdns.acme.dnschallenge.provider=duckdns"
+      - "--certificatesresolvers.duckdns.acme.email=${EMAIL}"
+      - "--certificatesresolvers.duckdns.acme.storage=/etc/traefik/acme/acme.json"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
+      - "--global.checkNewVersion=true"
+      - "--global.sendAnonymousUsage=false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/user/appdata/traefik:/etc/traefik/acme
+    networks:
+      - traefik
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    environment:
+      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      - "traefik.http.middlewares.compresstraefik.compress=true"
+
+      # Middleware to add security headers
+      - "traefik.http.middlewares.extended-headers.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.extended-headers.headers.contentSecurityPolicy=upgrade-insecure-requests"
+      - "traefik.http.middlewares.extended-headers.headers.referrerPolicy=no-referrer-when-downgrade"
+      # Catch all http requests and redirect to https
+      - "traefik.http.routers.http-catchall.rule=HostRegexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=http"
+      - "traefik.http.routers.http-catchall.middlewares=https-redirect"
+      - "traefik.http.routers.http-catchall.priority=1"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+
+      # Define the whitelist middleware
+      - "traefik.http.middlewares.whitelist.ipwhitelist.sourcerange=0.0.0.0/0"
+
+      # Auth Middleware
+      - "traefik.http.middlewares.kc-auth.forwardauth.address=http://traefik-forward-auth:4181"
+      - "traefik.http.middlewares.kc-auth.forwardauth.authResponseHeaders=X-Forwarded-User"
+      - "traefik.http.middlewares.kc-auth.forwardauth.trustForwardHeader=true"
+
+      # Catch all https requests and enforce authentication
+      - "traefik.http.routers.catch-all.rule=HostRegexp(`{host:.+}`)"
+      - "traefik.http.routers.catch-all.entrypoints=websecure"
+      - "traefik.http.routers.catch-all.middlewares=kc-auth,compresstraefik"
+      - "traefik.http.routers.catch-all.priority=1"
+      - "traefik.http.routers.catch-all.tls=true"
+
+      # Traefik Dashboard config
+      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
+      - "traefik.http.services.dashboard.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.middlewares=kc-auth"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "http://localhost:8082/ping","--spider"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  keycloak:
+    image: ${KEYCLOAK_IMAGE_TAG}
+    container_name: keycloak
+    domainname: ${DOMAIN}
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: ${KEYCLOAK_DB_NAME}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_DB_SCHEMA: public
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USERNAME}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_ENABLE_HEALTH_ENDPOINTS: 'true'
+      KEYCLOAK_ENABLE_STATISTICS: 'true'
+      KC_HOSTNAME: keycloak.${DOMAIN}
+      KC_HTTP_RELATIVE_PATH: "/auth"
+      KC_HTTP_ENABLED: 'true'
+      KC_PROXY: edge
+      PROXY_ADDRESS_FORWARDING: 'true'
+    networks:
+      - keycloak
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      - "traefik.http.routers.keycloak.rule=Host(`keycloak.${DOMAIN}`) && PathPrefix(`/auth`)"
+      - "traefik.http.routers.keycloak.service=keycloak"
+      - "traefik.http.routers.keycloak.entrypoints=websecure"
+      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
+      - "traefik.http.routers.keycloak.tls=true"
+      - "traefik.http.services.keycloak.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.keycloak.middlewares=whitelist"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: timeout 10s bash -c ':> /dev/tcp/127.0.0.1/8080' || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+  traefik-forward-auth:
+    image: thomseddon/traefik-forward-auth:2
+    container_name: traefik-forward-auth
+    environment:
+      - DEFAULT_PROVIDER=oidc
+      - PROVIDERS_OIDC_ISSUER_URL=https://keycloak.${DOMAIN}/auth/realms/${KEYCLOAK_REALM}
+      - PROVIDERS_OIDC_CLIENT_ID=${KEYCLOAK_CLIENT_ID}
+      - PROVIDERS_OIDC_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - SECRET=${SESSION_SECRET}
+      - COOKIE_DOMAIN=${DOMAIN}
+      - AUTH_HOST=auth.${DOMAIN}
+      - URL_PATH=/_oauth
+      - INSECURE_COOKIE=false
+      - LOG_LEVEL=trace
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      - "traefik.http.routers.traefik-forward-auth.rule=Host(`auth.${DOMAIN}`) && PathPrefix(`/_oauth`)"
+      - "traefik.http.routers.traefik-forward-auth.service=traefik-forward-auth"
+      - "traefik.http.routers.traefik-forward-auth.entrypoints=websecure"
+      - "traefik.http.routers.traefik-forward-auth.tls=true"
+      - "traefik.http.routers.traefik-forward-auth.middlewares=kc-auth,whitelist"
+      - "traefik.http.services.traefik-forward-auth.loadbalancer.server.port=4181"
+      - "traefik.http.services.traefik-forward-auth.loadbalancer.passhostheader=true"
+    restart: unless-stopped
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  postgres:
+    image: ${KEYCLOAK_POSTGRES_IMAGE_TAG}
+    container_name: postgres
+    volumes:
+      - type: bind
+        source: /home/user/appdata/keycloak-pg
+        target: /var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB_NAME}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    networks:
+      - keycloak
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-q", "-d", "${KEYCLOAK_DB_NAME}", "-U", "${KEYCLOAK_DB_USER}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  backups:
+    image: ${KEYCLOAK_POSTGRES_IMAGE_TAG}
+    container_name: backups
+    command: >-
+      sh -c 'sleep $KEYCLOAK_BACKUP_INIT_SLEEP &&
+      while true; do
+        pg_dump -h postgres -p 5432 -d $KEYCLOAK_DB_NAME -U $KEYCLOAK_DB_USER | gzip > $KEYCLOAK_POSTGRES_BACKUPS_PATH/>
+        find $KEYCLOAK_POSTGRES_BACKUPS_PATH -type f -mtime +$KEYCLOAK_POSTGRES_BACKUP_PRUNE_DAYS | xargs rm -f &&
+        sleep $KEYCLOAK_BACKUP_INTERVAL; done'
+    volumes:
+      - type: bind
+        source: /home/user/appdata/keycloak-pg-backups
+        target: /var/lib/postgresql/data
+      - type: bind
+        source: /home/user/appdata/keycloak-pg-backups
+        target: ${KEYCLOAK_POSTGRES_BACKUPS_PATH}
+    environment:
+      KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME}
+      KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER}
+      PGPASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KEYCLOAK_BACKUP_INIT_SLEEP: ${KEYCLOAK_BACKUP_INIT_SLEEP}
+      KEYCLOAK_BACKUP_INTERVAL: ${KEYCLOAK_BACKUP_INTERVAL}
+      KEYCLOAK_POSTGRES_BACKUP_PRUNE_DAYS: ${KEYCLOAK_POSTGRES_BACKUP_PRUNE_DAYS}
+      KEYCLOAK_POSTGRES_BACKUPS_PATH: ${KEYCLOAK_POSTGRES_BACKUPS_PATH}
+      KEYCLOAK_POSTGRES_BACKUP_NAME: ${KEYCLOAK_POSTGRES_BACKUP_NAME}
+    networks:
+      - keycloak
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
