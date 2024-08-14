@@ -1,3 +1,6 @@
+# No Wildcard subdomains
+
+
 networks:
   keycloak:
     external: true
