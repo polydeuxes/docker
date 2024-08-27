@@ -14,12 +14,12 @@ services:
     volumes:
       - ${USERDIR}/emulatorjs/config:/config
       - ${USERDIR}/emulatorjs/data:/data
-      - /mnt/merged/ROMs/NES:/roms/nes
-      - /mnt/merged/ROMs/SNES:/roms/snes
-      - /mnt/merged/ROMs/DS:/roms/nds
-      - /mnt/merged/ROMs/Playstation:/roms/psx
-      - /mnt/merged/ROMs/sega32x:/roms/sega32x
-      - /mnt/merged/ROMs/genesis:/roms/segaMS
+      - ${DATA}/NES:/roms/nes
+      - ${DATA}/SNES:/roms/snes
+      - ${DATA}/DS:/roms/nds
+      - ${DATA}/Playstation:/roms/psx
+      - ${DATA}/sega32x:/roms/sega32x
+      - ${DATA}/genesis:/roms/segaMS
     restart: unless-stopped
 
     networks:
