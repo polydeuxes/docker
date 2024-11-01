@@ -8,10 +8,16 @@ services:
   traefik:
     image: ${TRAEFIK_IMAGE_TAG}
     container_name: traefik
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     command:
       - "--log.level=${TRAEFIK_LOG_LEVEL}"
       - "--ping=true"
       - "--ping.entrypoint=ping"
+      - "--accesslog=true"
+      - "--accesslog.filepath=/etc/traefik/logs/access.log"
+      - "--accesslog.bufferingsize=100"
       - "--entryPoints.ping.address=:8082"
       - "--entryPoints.web.address=:80"
       - "--entryPoints.websecure.address=:443"
@@ -21,22 +27,24 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.endpoint=unix:///var/run/docker.sock"
       - "--providers.docker.exposedByDefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
       - "--certificatesresolvers.duckdns.acme.dnschallenge=true"
       - "--certificatesresolvers.duckdns.acme.dnschallenge.provider=duckdns"
       - "--certificatesresolvers.duckdns.acme.email=${EMAIL}"
-      - "--certificatesresolvers.duckdns.acme.storage=/etc/traefik/acme/acme.json"
+      - "--certificatesresolvers.duckdns.acme.storage=/etc/traefik/acme.json"
       - "--metrics.prometheus=true"
       - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
       - "--global.checkNewVersion=true"
       - "--global.sendAnonymousUsage=false"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /home/user/appdata/traefik:/etc/traefik/acme
+      - /home/user/appdata/traefik:/etc/traefik
     networks:
       - traefik
     ports:
       - "80:80"
       - "443:443"
+      - '8080:8080'
     environment:
       - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
     labels:
@@ -53,24 +61,36 @@ services:
       - "traefik.http.middlewares.securityHeaders.headers.contentTypeNosniff=true"
       - "traefik.http.middlewares.securityHeaders.headers.browserXssFilter=true"
       - "traefik.http.middlewares.securityHeaders.headers.referrerPolicy=strict-origin-when-cross-origin"
-      - "traefik.http.middlewares.securityHeaders.headers.contentSecurityPolicy=upgrade-insecure-requests"
+      - "traefik.http.middlewares.securityHeaders.headers.permissionsPolicy=camera=(self), microphone=(self), geolocation=()"
+      - "traefik.http.middlewares.securityHeaders.headers.customResponseHeaders.X-Content-Type-Options=nosniff"
+      - "traefik.http.middlewares.securityHeaders.headers.customResponseHeaders.X-XSS-Protection=1; mode=block"
+      # Place actual FQDN here
+      - "traefik.http.middlewares.securityHeaders.headers.customResponseHeaders.Content-Security-Policy=frame-ancestors 'self' https://fqdn https://*.fqdn;"
+
+      # Forwarded Headers middleware
+      - "traefik.http.middlewares.forwarded-headers.headers.customRequestHeaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.forwarded-headers.headers.customRequestHeaders.X-Forwarded-For=client"
+      - "traefik.http.middlewares.forwarded-headers.headers.customRequestHeaders.X-Real-IP=client"
 
       # Catch all http requests and redirect to https
       - "traefik.http.routers.http-catchall.rule=HostRegexp(`{host:.+}`)"
       - "traefik.http.routers.http-catchall.entrypoints=web"
-      - "traefik.http.routers.http-catchall.middlewares=https-redirect"
+      - "traefik.http.routers.http-catchall.middlewares=https-redirect,forwarded-headers"
       - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
       - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
 
       # Auth Middleware
       - "traefik.http.middlewares.global-auth.forwardauth.address=http://traefik-forward-auth:4181"
-      - "traefik.http.middlewares.global-auth.forwardauth.authResponseHeaders=X-Forwarded-User"
+      - "traefik.http.middlewares.global-auth.forwardauth.authResponseHeaders=Set-Cookie, Authorization, X-Forwarded-User"
       - "traefik.http.middlewares.global-auth.forwardauth.trustForwardHeader=true"
+
+      # Auth Bypass
+      - "traefik.http.middlewares.internal-whitelist.ipwhitelist.sourcerange=10.0.0.0/24"
 
       # Catch all https requests and enforce authentication
       - "traefik.http.routers.catch-all.rule=HostRegexp(`{host:.+}`)"
       - "traefik.http.routers.catch-all.entrypoints=websecure"
-      - "traefik.http.routers.catch-all.middlewares=global-auth,compresstraefik,securityHeaders"
+      - "traefik.http.routers.catch-all.middlewares=global-auth,compresstraefik,securityHeaders,forwarded-headers"
       - "traefik.http.routers.catch-all.tls=true"
       - "traefik.http.routers.catch-all.priority=1"
 
@@ -89,7 +109,9 @@ services:
     image: ${KEYCLOAK_IMAGE_TAG}
     container_name: keycloak
     domainname: ${DOMAIN}
-    command: start-dev
+    command: start
+    volumes:
+      - /home/user/appdata/keycloak/keycloak.log:/opt/jboss/keycloak/standalone/log/server.log
     environment:
       KC_DB: postgres
       KC_DB_URL_HOST: postgres
@@ -105,6 +127,7 @@ services:
       KC_HTTP_RELATIVE_PATH: "/auth"
       KC_HTTP_ENABLED: 'true'
       KC_PROXY: edge
+      KC_HOSTNAME_STRICT_HTTPS: 'true'
       PROXY_ADDRESS_FORWARDING: 'true'
     networks:
       - keycloak
@@ -115,11 +138,17 @@ services:
       - "traefik.http.routers.keycloak.rule=Host(`keycloak.${DOMAIN}`) && PathPrefix(`/auth`)"
       - "traefik.http.routers.keycloak.service=keycloak"
       - "traefik.http.routers.keycloak.entrypoints=websecure"
-      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
       - "traefik.http.routers.keycloak.tls=true"
+
+      # Directly define middleware for CSP
+      - "traefik.http.middlewares.keycloakCSP.headers.contentSecurityPolicy=default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; manifest-src 'self' https://keycloak.${DOMAIN}; connect-src 'self'; frame-ancestors 'self'; upgrade-insecure-requests"
+
+      # Apply both global and specific middleware
+      - "traefik.http.routers.keycloak.middlewares=securityHeaders,keycloakCSP"
+      - "traefik.http.routers.keycloak.middlewares=securityHeaders,keycloakCSP,forwarded-headers"
+
+      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
       - "traefik.http.services.keycloak.loadbalancer.passhostheader=true"
-      - "traefik.http.routers.keycloak.middlewares=securityHeaders"
-      - "traefik.http.routers.keycloak.priority=100"
     restart: unless-stopped
     depends_on:
       postgres:
@@ -132,7 +161,8 @@ services:
       start_period: 90s
 
   traefik-forward-auth:
-    image: thomseddon/traefik-forward-auth:2
+# https://github.com/thomseddon/traefik-forward-auth/issues/156
+    image: ghcr.io/palmergw/traefik-forward-auth:latest
     container_name: traefik-forward-auth
     environment:
       - DEFAULT_PROVIDER=oidc
@@ -144,7 +174,7 @@ services:
       - AUTH_HOST=auth.${DOMAIN}
       - URL_PATH=/_oauth
       - INSECURE_COOKIE=false
-      - LOG_LEVEL=trace
+      - LOG_LEVEL=debug
     networks:
       - traefik
     labels:
@@ -154,9 +184,11 @@ services:
       - "traefik.http.routers.traefik-forward-auth.service=traefik-forward-auth"
       - "traefik.http.routers.traefik-forward-auth.entrypoints=websecure"
       - "traefik.http.routers.traefik-forward-auth.tls=true"
+
       - "traefik.http.routers.traefik-forward-auth.middlewares=global-auth"
       - "traefik.http.services.traefik-forward-auth.loadbalancer.server.port=4181"
       - "traefik.http.services.traefik-forward-auth.loadbalancer.passhostheader=true"
+
     restart: unless-stopped
     depends_on:
       keycloak:
@@ -165,6 +197,7 @@ services:
   postgres:
     image: ${KEYCLOAK_POSTGRES_IMAGE_TAG}
     container_name: postgres
+#    user: "1000:1000"
     volumes:
       - type: bind
         source: /home/user/appdata/keycloak-pg
@@ -186,6 +219,7 @@ services:
   backups:
     image: ${KEYCLOAK_POSTGRES_IMAGE_TAG}
     container_name: backups
+    user: "1000:1000"
     command: >-
       sh -c 'sleep $KEYCLOAK_BACKUP_INIT_SLEEP &&
       while true; do
